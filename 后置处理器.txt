@@ -1,0 +1,132 @@
+688377290
+beanFactory.getType()
+先从单列池里找，  找到则bean.getClass返回，找不到再从parent的单列池里找
+
+predictType
+如果找不到  则获取这个beanDefination, 判断bd里的targetClass,有就直接返回，
+如果没有则查找beanClass,有直接返回
+如果beanClass也没找到，则查找BeanClassName，进行class.forName()进行类加载，
+再判断是否是FactoryBean,如果不是则直接返回beanClass,如果不是则需要实列化FactoryBean,调用getObjectType()返回
+
+isTypeMatch()
+遍历所有beanDefination, 查看所有beanClass,  进行匹配。
+如果FactoryBean.isAssanableFrom(class)为true, 还必须进行doGetBean()进行实列化，实列化后调用getObjectType()以得到返回值类型
+
+
+
+
+refresh:
+/** 对工厂进行初始化 : new DefaultListableBeanFactory(getInternalParentBeanFactory())*/
+			ConfigurableListableBeanFactory beanFactory = obtainFreshBeanFactory();
+
+* 准备工厂配置了bean日后实列化后的处理方式：
+			 *  ApplicationContextAwareProcessor作为beanPostProcessor就是在这里new 并且add入的*/
+			prepareBeanFactory(beanFactory);
+
+/**
+ * Invoke factory processors registered as beans in the context.
+				 * **************实列化所有实现了BeanFactoryPostProcessor接口的类，
+				 * 并调用BeanDefinationRegisryPostProcessor和BeanFactoryPostProcessor这两个接口的方法。
+				 *
+				 * 简单地说就是调用我们的bean工厂后置处理器*/
+				invokeBeanFactoryPostProcessors(beanFactory);
+
+/**
+				 * Register bean processors that intercept bean creation.
+				 * **************注册beanPostProcessor
+				 * 将所有实现类BeanPostProcessor接口的beanDefination全部筛选出，
+				 * 再通过get  beanFactory.getBean(XX)进行 实列化，
+				 * 最后add    beanFactory.addBeanPostProcessor(postProcessor)放入
+				 *
+				 * 通过beanFactory.getBean将其实列化，后面全部beanFactory.addBeanPostProcessor*/
+				registerBeanPostProcessors(beanFactory);
+
+
+ * **************实列并初始化所有单列beanDefination
+			finishBeanFactoryInitialization(beanFactory);
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+doGetBean
+
+尝试从缓存中获取对象   这个是单纯都从 一级 二级 三级缓存获取（如果是循环依赖，可能会在缓存中超找到早期对象，注意会ObjectFactory.getObject(）提前判断是否需要进行代理），
+找不到不会主动去创建对象实列 */
+
+第一次：resolveBeforeInstantiation  -|| InstantiationAwareBeanPostProcessor - postProcessBeforeInstantiation
+生成Advisors的地方
+/** 如果配置了@EnableTransactionManagement 或  @EnableAspectJAutoProxy 的话，
+会调用 AbstractAutoProxyCreator.postProcessBeforeInstantiation ,其他的不会调用*/
+
+
+第二次：createBeanInstance  -|| AutowiredAnnotationBeanPostProcessor - determineCandidateConstructors
+执行后置处理器 :推断bd的构造方法， 然后实列化
+		 * 使用合适的实列化策略来创建新的实列：工厂方法，构造函数自动注入，简单实列化
+		 * 调用了构造方法生成对象，生成了一个对象实列,不过属性为空，早期对象（一个裸bean）
+		注：
+		 * 1：如果beanDefination中的FactoryMethodName ！= null, 那就属于@Bean, 需要先beanFactory.getBean(appConfig),再method.invoke(appConfigInstance,args[])实列beanInstance
+		 * 2: 如果非@Bean,则会调用后至处理器AutowiredAnnotationBeanPostProcessor.determineConstructorsFromBeanPostProcessors推断构造器，通过构造器返回beanInstance。
+
+第三次：applyMergedBeanDefinitionPostProcessors -|| AutowiredAnnotationBeanPostProcessor -postProcessMergedBeanDefinition
+将这个类的@Autowired的或@Resource对应的元素找出来,然后全部放入beanDefination 中的HashSet集合里
+		/** AutowiredAnnotationBeanPostProcessor 找出所有的@Autowired的对应的element,
+		 *  CommonAnnotationBeanPostProcessor 找出所有的@Resource对应的element
+
+
+三和四之间：
+			 * 解决循环依赖
+			 * 把我们的早期对象包装成一个 singletonFactory对象  该对象提供了一个getObject方法，该方法内部调用getEarlyBeanReference
+			 *
+			 *  为什么要包装成ObjectFactory,举个例子说明：
+			 *  A需要自动注入B, B需要自动注入A。
+			 *  A先初始化，把早期对象暴漏到singletonFactoriesMap里，发现需要自动装配B, 接着beanFactory.getBean(B),B在实列化的时候发现需要自动注入A,
+			 *  所以会去从singletonFactoriesMap查找A的包装类早期对象ObjectFactory,
+			 *  如果A找到了，先进行ObjectFactory.getObject()这个方法，判断A是否需要进行代理化，如果需要则A先被代理化，把A代理对象返回给B进行注入
+
+第四次： populateBean -||    xxxxx - postProcessAfterInstantiation
+		执行beanPostProcessor：判断对象是否需要接下来的填充属性操作  ----  正常来说都是需要, 基本只会返回true, 除非程序员自己写个beanPostProcessor过滤某个bean不需要进行自动装配
+
+
+
+
+
+
+第五次:  populateBean  -||        AutowiredAnnotationBeanPostProcessor -  postProcessPropertyValues
+执行后置处理器  填充属性
+			*  RequiredAnnotationBeanPostProcessor：检查属性的setter方法上是否标注有@Required注解，如果带有此注解，但是未配置属性（配置文件中的<property>元素），那么就会抛出异常
+			*  CommonAnnotationBeanPostProcessor：遍历bean的字段，寻找通用的依赖（javax中规定的）注解，完成属性注入。通用注解包括有：javax.annotation.Resource，javax.xml.ws.WebServiceRef，javax.ejb.EJB
+			
+			*  重点看：AutowiredAnnotationBeanPostProcessor
+			*  AutowiredAnnotationBeanPostProcessor：@Autowired的element
+
+
+
+五和六之间：
+	initializeBean -||  invokeAwareMethods
+			 * 若我们的bean实现了XXXAware接口， 则进行方法的回调
+			 * 比如BeanFactoryAware  BeanNameAware  BeanClassLoaderAware
+
+
+
+第六次：  initializeBean  -||   ApplicationContextAwareProcessor  -  postProcessBeforeInitialization
+	 执行后置处理的before   调用postProcessorsBeforeInitialization方法
+			 * 最熟悉的 ApplicationContextAware 和 ApplicationEventPublisherAware 就是由ApplicationContextAwareProcessor这里注入的,
+			 wrappedBean = applyBeanPostProcessorsBeforeInitialization(wrappedBean, beanName);
+
+六和七之间：
+                initializeBean  -||   invokeInitMethods
+			/**调用初始化方法 --- 执行bean的生命周期回调中的初始化init方法
+			 * (InitializingBean) bean).afterPropertiesSet()*/
+
+
+第七次：
+	initializeBean  -||   applyBeanPostProcessorsBeforeInitialization -  postProcessAfterInitialization
+                执行后置处理器  注：aop开始就是在这里产生 JdkDynamicAopProxy，postProcessorsAfterInitialization
+
+			 * 1:ApplicationListenerDetector： this.applicationContext.addApplicationListener((ApplicationListener<?>) bean);
+			 * 2:(AnnotationAwareAspectJAutoProxyCreator)AbstractAutoProxyCreator.wrapIfNecessary(bean, beanName, cacheKey)
+
+			// 获取容器中所有的bean的后置处理器
+			// ApplicationListenerDetector： this.applicationContext.addApplicationListener((ApplicationListener<?>) bean);
+			// (AnnotationAwareAspectJAutoProxyCreator)AbstractAutoProxyCreator.wrapIfNecessary(bean, beanName, cacheKey)
+
+
